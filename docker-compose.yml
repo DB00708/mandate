@@ -1,0 +1,99 @@
+name: mandate
+
+x-app: &app
+  build: .
+  image: mandate-app:latest
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment: &env
+    DATABASE_URL: postgresql://mandate:mandate@postgres:5432/mandate
+    REDIS_URL: redis://redis:6379/0
+    PAYPAL_MODE: ${PAYPAL_MODE:-mock}
+    PAYPAL_TIMEOUT_SECONDS: ${PAYPAL_TIMEOUT_SECONDS:-3}
+    LLM_PROVIDER: ${LLM_PROVIDER:-rules}
+    MANDATE_TEST_MODE: ${MANDATE_TEST_MODE:-0}
+    MANDATE_DEMO_MODE: ${MANDATE_DEMO_MODE:-1}
+    ONBOARDING_TOKEN: ${ONBOARDING_TOKEN:-sharma-onboarding-dev}
+    COOLING_OFF_SECONDS: ${COOLING_OFF_SECONDS:-600}
+    HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS:-900}
+    RECONCILE_AFTER_SECONDS: ${RECONCILE_AFTER_SECONDS:-30}
+    BREAKER_COOLDOWN_SECONDS: ${BREAKER_COOLDOWN_SECONDS:-10}
+    ODD_HOUR_CHECK: ${ODD_HOUR_CHECK:-1}
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mandate
+      POSTGRES_PASSWORD: mandate
+      POSTGRES_DB: mandate
+    ports: ["5433:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mandate"]
+      interval: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6380:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  api:
+    <<: *app
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 3s
+      retries: 30
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "apps.worker.main"]
+
+  paypal-mock:
+    <<: *app
+    command: ["uvicorn", "apps.paypal_mock.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    ports: ["8002:8002"]
+    environment:
+      <<: *env
+      WEBHOOK_TARGET_URL: http://api:8000/webhooks/paypal
+      MOCK_DROP_SLEEP_SECONDS: ${MOCK_DROP_SLEEP_SECONDS:-6}
+
+  mcp:
+    <<: *app
+    command: ["python", "-m", "apps.mcp_server.main"]
+    ports: ["8001:8001"]
+    environment:
+      <<: *env
+      MANDATE_API_URL: http://api:8000
+
+  tests:
+    <<: *app
+    restart: "no"
+    profiles: ["test"]
+    command: ["pytest", "-q", "tests"]
+    volumes: ["./:/app"]
+    environment:
+      <<: *env
+      MANDATE_API_URL: http://api:8000
+      PAYPAL_MOCK_URL: http://paypal-mock:8002
+      MCP_URL: http://mcp:8001/mcp
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+.git
+.env
+.seed_keys
+.pytest_cache

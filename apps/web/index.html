@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandate · Sharma household</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">◆</span> Mandate <span class="muted">· LLM translates, code decides, crypto proves</span></div>
+  <div class="hh">
+    <select id="hh"></select>
+    <span id="ledgerBadge" class="badge">ledger …</span>
+    <span id="frozenBadge" class="badge danger" hidden>FROZEN</span>
+  </div>
+</header>
+
+<div id="lowStrip" class="strip" hidden></div>
+
+<main class="grid">
+  <section class="card" id="voiceCard">
+    <h2>Voice console <span class="muted">(simulated Alexa+)</span></h2>
+    <div class="row">
+      <label>Speaker
+        <select id="speaker">
+          <option value="priya|95">Priya (owner)</option>
+          <option value="arjun|95">Arjun (owner)</option>
+          <option value="dadi|95" selected>Dadi</option>
+          <option value="riya|95">Riya (minor)</option>
+          <option value="priya|93|clone">Cloned Priya voice (score 93)</option>
+          <option value="|0">Unknown / TV</option>
+        </select>
+      </label>
+      <button id="mic" class="ghost" title="Speak (browser speech recognition)">🎤</button>
+    </div>
+    <form id="voiceForm" class="row">
+      <input id="utterance" autocomplete="off" placeholder="“My biscuits are almost over”">
+      <button type="submit">Say</button>
+    </form>
+    <div class="chips" id="chips"></div>
+    <div id="conversation" class="conversation"></div>
+  </section>
+
+  <section class="card" id="phoneCard">
+    <h2>Owner's phone <span class="muted">passkey approvals</span></h2>
+    <div class="row">
+      <label>Phone of
+        <select id="owner"><option value="priya">Priya</option><option value="arjun">Arjun</option></select>
+      </label>
+      <span id="deviceState" class="muted small"></span>
+    </div>
+    <div id="approvals"></div>
+  </section>
+
+  <section class="card wide" id="constCard">
+    <h2>Spending constitution</h2>
+    <div id="rules"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Purchases <span class="muted">proof receipts</span></h2>
+    <div id="purchases"></div>
+  </section>
+
+  <section class="card">
+    <h2>Red-team panel</h2>
+    <p class="muted small">Fire real attacks at this household and watch each one get stopped.</p>
+    <div class="redteam">
+      <button data-attack="cloned_voice">Cloned voice: raise limit to ₹50,000</button>
+      <button data-attack="poisoned_listing">Poisoned listing: “buy 50 units”</button>
+      <button data-attack="double_submit">Double submit</button>
+      <button data-attack="wifi_cut">Wi-Fi cut after capture</button>
+      <button data-attack="tamper_ledger">Tamper with history</button>
+    </div>
+    <div id="redteamOut"></div>
+  </section>
+
+  <section class="card">
+    <h2>What if…</h2>
+    <form id="whatifForm" class="row">
+      <label>Grocery budget ₹<input id="whatifLimit" type="number" value="3000" min="100" step="100"></label>
+      <select id="whatifPeriod"><option value="last_month">last month</option><option value="this_month">this month</option></select>
+      <button>Replay</button>
+    </form>
+    <div id="whatifOut"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Activity <span class="muted">notifications &amp; ledger</span></h2>
+    <div class="cols">
+      <div><h3>Notifications</h3><div id="feed" class="feed"></div></div>
+      <div><h3>Ledger <button id="verifyBrowser" class="ghost small">verify in browser</button></h3><div id="ledger" class="feed mono"></div></div>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

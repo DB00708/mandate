@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+.seed_keys/
+.pytest_cache/
+.idea/
