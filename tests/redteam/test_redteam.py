@@ -79,3 +79,23 @@ def test_mcp_server_tools(sharma):
     sharma.wait_state(body["purchase"]["purchase_id"], "CONFIRMED")
     ev = sharma.events("voice.utterance")[-1]
     assert ev["payload"]["via"] == "mcp"
+
+
+def test_mcp_server_speaks_spec_2025_11_25():
+    """Amazon's Alexa+ track requires MCP spec 2025-11-25 or later over Streamable HTTP."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async def run():
+        async with streamablehttp_client(os.getenv("MCP_URL", "http://localhost:8001/mcp")) as (read, write, _):
+            async with ClientSession(read, write) as s:
+                init = await s.initialize()
+                tools = (await s.list_tools()).tools
+                return init, tools
+    init, tools = asyncio.run(run())
+    assert init.protocolVersion == "2025-11-25"
+    assert init.serverInfo.name == "mandate"
+    by_name = {t.name: t for t in tools}
+    assert by_name["explain"].annotations.readOnlyHint is True
+    assert by_name["revoke"].annotations.destructiveHint is True
+    assert by_name["request_purchase"].title == "Request a purchase"

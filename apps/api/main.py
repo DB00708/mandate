@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import pathlib
 import time
 from datetime import datetime
@@ -19,6 +20,7 @@ from apps.common.db import append_event, lock_household, migrate, now, redis, tx
 from core.budget.reservations import month_key
 from core.ledger.hashchain import verify_chain
 from core.saga.idempotency import new_ulid
+from observability import tracing
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("mandate.api")
@@ -30,7 +32,13 @@ WEB = pathlib.Path(__file__).resolve().parents[1] / "web"
 @app.on_event("startup")
 def startup():
     migrate()
-    log.info("migrations applied; test_mode=%s paypal_mode=%s", config.TEST_MODE, saga.paypal().mode)
+    log.info("migrations applied; test_mode=%s paypal_mode=%s llm=%s tracing=%s", config.TEST_MODE,
+             saga.paypal().mode, os.getenv("LLM_PROVIDER", "rules"), tracing.enabled())
+
+
+@app.on_event("shutdown")
+def shutdown():
+    tracing.flush()
 
 
 @app.exception_handler(KeyError)
@@ -147,9 +155,9 @@ class VoiceIn(BaseModel):
 
 
 @app.post("/households/{hh}/voice")
-def voice_command(hh: str, body: VoiceIn):
+def voice_command(hh: str, body: VoiceIn, request: Request):
     return _row(voice.handle(hh, body.text, body.speaker, body.speaker_score, body.audio_sha256, body.purchase_id,
-                             body.via, body.room, body.llm_fault))
+                             body.via, body.room, body.llm_fault, tracing.incoming_parent(request.headers)))
 
 
 class PurchaseIn(BaseModel):

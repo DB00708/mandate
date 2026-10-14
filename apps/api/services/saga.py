@@ -18,6 +18,7 @@ from apps.common.db import append_event, lock_household, notify, now, redis, tx
 from core.mandates.diff import inr
 from core.saga import states as S
 from core.saga.idempotency import request_id
+from observability import tracing
 
 log = logging.getLogger("mandate.saga")
 _paypal = None
@@ -86,6 +87,19 @@ def _done(conn, item):
 
 
 def process(item: dict):
+    """One outbox step, traced into the purchase's trace (the trace id is derived from the purchase id)."""
+    with tracing.trace(f"payment {item['step']}", session_id=item["household_id"], seed=item["purchase_id"],
+                       tags=["saga", f"paypal:{paypal().mode}"], as_type="chain",
+                       input={"purchase_id": item["purchase_id"], "step": item["step"], "attempt": item["attempts"] + 1},
+                       metadata={"outbox_id": item["id"]}) as t:
+        _process(item)
+        if tracing.enabled():
+            with tx() as conn:
+                p = purchases.get(conn, item["purchase_id"])
+            t.update(output={"state": p["state"], "paypal_order_id": p["paypal_order_id"], "uncertain": p["uncertain"]})
+
+
+def _process(item: dict):
     step = item["step"]
     if breaker_open():
         with tx() as conn:
@@ -317,6 +331,13 @@ def reconcile_one(pid: str):
         p = purchases.get(conn, pid)
     if not p or not p["paypal_order_id"]:
         return
+    with tracing.trace("payment reconcile", session_id=p["household_id"], seed=pid, tags=["saga", "reconciler"],
+                       as_type="chain", input={"purchase_id": pid, "state": p["state"], "uncertain": p["uncertain"]}) as t:
+        _reconcile(pid, p)
+        t.update(output={"paypal_order_id": p["paypal_order_id"]})
+
+
+def _reconcile(pid: str, p: dict):
     try:
         order = paypal().get_order(p["paypal_order_id"])
     except (PayPalTimeout, PayPalUnavailable, PayPalRejected) as e:

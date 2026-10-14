@@ -6,6 +6,7 @@ import time
 from apps.api.services import queries, saga
 from apps.common import config
 from apps.common.db import migrate, redis
+from observability import tracing
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("mandate.worker")
@@ -27,8 +28,8 @@ def main():
         except Exception as e:  # postgres still starting
             log.info("waiting for database: %s", e)
             time.sleep(1)
-    log.info("worker started (tick=%ss, hold_ttl=%ss, cooling_off=%ss)", config.WORKER_TICK_SECONDS,
-             config.HOLD_TTL_SECONDS, config.COOLING_OFF_SECONDS)
+    log.info("worker started (tick=%ss, hold_ttl=%ss, cooling_off=%ss, tracing=%s)", config.WORKER_TICK_SECONDS,
+             config.HOLD_TTL_SECONDS, config.COOLING_OFF_SECONDS, tracing.enabled())
     last_rhythm = 0.0
     while running:
         try:
@@ -42,6 +43,7 @@ def main():
         except Exception:
             log.exception("tick failed")
         time.sleep(config.WORKER_TICK_SECONDS)
+    tracing.flush()
     log.info("worker stopped")
 
 

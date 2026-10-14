@@ -16,6 +16,7 @@ from core.mandates.diff import inr
 from core.policy import engine
 from core.saga import states as S
 from memory.rhythm.burn import baseline_qty
+from observability import tracing
 
 
 def catalog() -> Catalog:
@@ -100,9 +101,15 @@ def decide(conn, p: dict, actor: str, acknowledged: bool = False, owner_approved
     key = hold["month_key"] if hold else month_key(now())
     frozen = conn.execute("SELECT frozen FROM households WHERE id = %s", (hh,)).fetchone()["frozen"]
     ctx = _context(conn, p, acknowledged, owner_approved)
-    d = engine.evaluate(ctx, mandates.current(conn, hh), used_by_mandate(conn, hh, key, p["purchase_id"]),
-                        frozen, mandates.meta(conn, hh))
-    dd = d.as_dict()
+    with tracing.observe("policy engine", as_type="guardrail",
+                         input={"purchase_id": p["purchase_id"], "merchant": p["merchant"], "items": p["cart"]["items"],
+                                "total_paise": p["final_total"] if p["final_total"] is not None else p["cart_total"],
+                                "requested_by": p["requested_by"], "acknowledged": acknowledged,
+                                "owner_approved": owner_approved, "frozen": frozen, "month_key": key}) as g:
+        d = engine.evaluate(ctx, mandates.current(conn, hh), used_by_mandate(conn, hh, key, p["purchase_id"]),
+                            frozen, mandates.meta(conn, hh))
+        dd = d.as_dict()
+        g.update(output=dd, level="WARNING" if d.outcome == engine.DENY else None)
     append_event(conn, hh, "policy.decided", {"purchase_id": p["purchase_id"], "decision": dd,
                                               "acknowledged": acknowledged, "owner_approved": owner_approved}, "policy")
     fields = {"decision": dd, "mandate_id": d.mandate_id, "mandate_version": d.mandate_version}

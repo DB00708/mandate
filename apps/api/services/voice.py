@@ -5,6 +5,7 @@ enough to read, to spend inside a mandate, and to tighten. Loosening is always t
 an approval card on an owner's phone."""
 import copy
 import hashlib
+import os
 
 from psycopg.types.json import Jsonb
 
@@ -18,6 +19,7 @@ from core.saga.idempotency import new_ulid
 from intelligence.parser.parser import FaultyProvider, ParseFailed, parse
 from intelligence.planner.planner import plan
 from intelligence.providers.base import get_provider
+from observability import tracing
 
 
 def _say(speech: str, **extra) -> dict:
@@ -33,7 +35,31 @@ def resolve_speaker(conn, household_id: str, claim: str | None, score: int) -> d
 
 def handle(household_id: str, text: str, speaker: str | None, speaker_score: int = 0, audio_sha256: str | None = None,
            purchase_id: str | None = None, via: str = "voice", room: str = "living room",
-           llm_fault: int = 0) -> dict:
+           llm_fault: int = 0, trace_parent: dict | None = None) -> dict:
+    """One command = one trace: transcript in, what was said back out, every model call,
+    planner run and policy decision as children (and nested under the MCP tool call, if any)."""
+    with tracing.trace(f"{via} command", session_id=household_id, user_id=speaker or "unknown",
+                       tags=[via, f"llm:{os.getenv('LLM_PROVIDER', 'rules')}"], parent=trace_parent, as_type="agent",
+                       input={"text": text, "speaker_claim": speaker, "speaker_score": speaker_score, "room": room},
+                       metadata={"household_id": household_id, "purchase_id": purchase_id}) as t:
+        out = _handle(household_id, text, speaker, speaker_score, audio_sha256, purchase_id, via, room, llm_fault)
+        purchase = out.get("purchase") or {}
+        decision = out.get("decision") or purchase.get("decision") or {}
+        t.update(output={"speech": out.get("speech"), "intent": out.get("intent"), "tier": out.get("tier"),
+                         "purchase_state": purchase.get("state"), "decision": decision.get("outcome")},
+                 metadata={"purchase_id": purchase.get("purchase_id"), "parse_attempts": out.get("parse_attempts")})
+        tracing.score("intent", out.get("intent"), "CATEGORICAL")
+        tracing.score("tier", out.get("tier"), "NUMERIC")
+        tracing.score("parse_attempts", out.get("parse_attempts"), "NUMERIC")
+        if out.get("failed_closed"):
+            tracing.score("failed_closed", 1, "BOOLEAN", "parser produced no valid proposal; user asked to repeat")
+        if decision.get("outcome"):
+            tracing.score("policy_outcome", decision["outcome"], "CATEGORICAL", decision.get("reason"))
+        return out
+
+
+def _handle(household_id: str, text: str, speaker: str | None, speaker_score: int, audio_sha256: str | None,
+            purchase_id: str | None, via: str, room: str, llm_fault: int) -> dict:
     today = now().astimezone(IST).date()
     with tx() as conn:
         lock_household(conn, household_id)
@@ -160,8 +186,15 @@ def _purchase(household_id, p, who, speaker, text, purchase_id, via):
                               force_confirm=ask)
         return {"speech": ask, "purchase": _p(r["purchase"]), "decision": r["decision"]}
     # Quarantined planner: reads untrusted listings, proposes (sku, qty) only.
-    cart = plan([{"category": i["category"], "qty": i["qty"], "product_hint": i["product_hint"]} for i in p["items"]],
-                cat.listings(household_id), usual, p.get("merchant"))
+    items = [{"category": i["category"], "qty": i["qty"], "product_hint": i["product_hint"]} for i in p["items"]]
+    listings = cat.listings(household_id)
+    with tracing.observe("planner (quarantined)", as_type="chain", input={"items": items, "merchant": p.get("merchant")},
+                         metadata={"listings_read": [l["sku"] for l in listings
+                                                     if l["category"] in {i["category"] for i in items}]}) as span:
+        cart = plan(items, listings, usual, p.get("merchant"))
+        span.update(output=cart.model_dump() if cart else None,
+                    level="WARNING" if cart and any("instructed" in n for n in cart.notes) else None,
+                    status_message="merchant text tried to steer the planner" if cart and cart.notes else None)
     if cart is None:
         return {"speech": "I couldn't find that in the shop."}
     r = purchases.request(household_id, purchase_id, who, speaker, via, text, cart.merchant,

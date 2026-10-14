@@ -13,6 +13,10 @@ hash-chained, append-only log.
 Requires Docker Desktop.
 
 ```bash
+cp .env.example .env
+```
+
+```bash
 docker compose up -d --build
 ```
 
@@ -33,6 +37,23 @@ what-if replay.
 | `worker` | — | outbox dispatcher, reconciler, hold/approval expiry, cooling-off, rhythm reminders |
 | `postgres` | 5433 | event log + projections |
 | `redis` | 6380 | live notifications, circuit breaker, voice lockout, mock state |
+| `langfuse-web` | 3000 | self-hosted Langfuse (profile `observability`), plus its worker, Postgres, ClickHouse, Redis, MinIO |
+
+### Observability (Langfuse, self-hosted)
+
+`cp .env.example .env` turns on the `observability` profile and `LANGFUSE_TRACING=1`, then `docker compose up -d`.
+The org, project, API keys and admin login are provisioned on first start from `.env`. Sign in at
+http://localhost:3000 and open Tracing:
+
+- **One trace per voice or MCP command.** The MCP tool call (`mcp request_purchase`) contains the API's
+  `mcp command`, which contains `parser` (each model call is a generation with tokens and latency),
+  `planner (quarantined)` (WARNING when merchant text tried to steer it) and `policy engine` (a guardrail
+  with the decision). User = speaker, session = household. Scores: intent, tier, parse_attempts,
+  policy_outcome, failed_closed.
+- **One trace per purchase for money.** `payment create`, `payment capture`, `payment reconcile` and refunds run
+  in the worker at different times but share a trace id derived from the purchase id. Each PayPal HTTP call is
+  a tool span with its `PayPal-Request-Id`.
+- Signatures, tokens, secrets and vault ids are masked before export. With tracing off, Langfuse is never imported.
 
 ## Test it
 
@@ -46,10 +67,32 @@ docker compose --env-file .env.test up -d --build
 docker compose --env-file .env.test run --rm tests
 ```
 
-95 tests: 43 unit tests of `core/` and `intelligence/`, 44 scenario tests that onboard a fresh
-Sharma family through the API for each case, and 8 red-team tests (including the MCP server
-and Postgres append-only enforcement). Every scenario also asserts the household's hash chain
-still verifies afterwards.
+Unit tests of `core/`, `intelligence/` and tracing; scenario tests that onboard a fresh Sharma family through
+the API for each case; red-team tests (including the MCP server, its 2025-11-25 protocol version and Postgres
+append-only enforcement). Every scenario also asserts the household's hash chain still verifies afterwards.
+With the observability profile up and `LANGFUSE_TRACING=1`, `tests/observability` reads the traces back from
+Langfuse's API.
+
+### Live tests (real services, no mocks)
+
+Put real credentials in `.env` (see `.env.example`), then check each service:
+
+```bash
+docker compose run --rm tests python scripts/live_check.py
+```
+
+```bash
+docker compose run --rm tests pytest -q tests/live
+```
+
+- `tests/live/test_llm_live.py`: the parser on Bedrock (`LLM_PROVIDER=bedrock`) or Nebius Token Factory
+  (`LLM_PROVIDER=nebius`), covering the Sharma utterances, Hinglish, and an injection attempt in speech.
+- `tests/live/test_paypal_sandbox_live.py` (`PAYPAL_MODE=sandbox`): OAuth, idempotent order creation on
+  `PayPal-Request-Id`, the unapproved-capture error the saga depends on, and vaulted capture plus partial refund.
+- `tests/live/test_e2e_live.py` (`MANDATE_LIVE=1`, stack running in sandbox with a real model): Dadi's
+  biscuits through a real model and a real PayPal sandbox order.
+
+Each live test skips itself when its credentials are missing.
 
 ## The Sharma family
 
@@ -102,8 +145,14 @@ Copy `.env.example` to `.env`. Defaults run fully offline.
 - `PAYPAL_MODE=sandbox` with `PAYPAL_CLIENT_ID/SECRET` uses the real PayPal sandbox (Orders v2,
   `PayPal-Request-Id` idempotency, webhook signature verification). `PAYPAL_VAULT_ID` enables
   autonomous capture; without it the owner gets a buyer-approval link (the fallback in the design).
-- `LLM_PROVIDER=bedrock` (needs `boto3` + AWS credentials) or `nebius` (`NEBIUS_API_KEY`) swaps the
-  parser model. The output is validated against the same schema either way.
+- `LLM_PROVIDER=bedrock` (AWS credentials; default model Amazon Nova 2 Lite via the `us.` inference profile) or
+  `nebius` (`NEBIUS_API_KEY`; NVIDIA Nemotron on Token Factory) swaps the parser model. The output is
+  validated against the same schema either way.
+- `PAYPAL_CURRENCY` / `PAYPAL_FX_PER_INR` charge a sandbox merchant that can't take INR in another
+  currency; budgets and policy stay in rupees.
+
+See [docs/hackathon-compliance.md](docs/hackathon-compliance.md) for what each hackathon's rules require and
+where Mandate stands.
 
 ## Known limits
 
@@ -113,6 +162,6 @@ Copy `.env.example` to `.env`. Defaults run fully offline.
   attestation yet).
 - **Speaker ID** is an input (`speaker`, `speaker_score`) from the voice front end; Mandate treats
   it as a soft signal by design and never uses it to loosen anything.
-- **Verified against the bundled PayPal mock only.** The sandbox code path and the Bedrock/Nebius
-  providers are implemented but were not run against live services (no credentials here).
+- **Live services not yet verified.** The full suite passes against the bundled PayPal mock and the rules
+  parser. `tests/live/` covers the real PayPal sandbox, Bedrock and Nebius but needs credentials to run.
 - The web UI is a static page served by the API rather than the Next.js app in the design doc.
